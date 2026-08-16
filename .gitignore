@@ -4,12 +4,31 @@ __pycache__/
 
 checkpoints/
 
+tests for failure/
+SCB_RL/Tests/
+
 dataset.pkl
 
 
 *_log.txt
 *_results.txt
 dataset_summary.txt
+
+dump_filetree.py
+dump_project.py
+
+ga_dataset_log.txt
+ga_test_log.txt
+gnn_detailed_stress_failures.txt
+gnn_detailed_stress_results.txt
+pipeline_log.txt
+ppo_training_100ep.txt
+ppo_training.txt
+project_dump.txt
+enviroment_test_results.txt
+filetree.txt
+
+
 
 *.zip
 

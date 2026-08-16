@@ -236,25 +236,36 @@ class HierarchicalSCBPolicy(nn.Module):
         # Empty cut
         if len(cut) == 0:
 
-            operator_logits[ActionType.REMOVE.value] = float("-inf")
-            operator_logits[ActionType.SWAP.value] = float("-inf")
+            operator_logits[ActionType.REMOVE.value] = -1e9
+            operator_logits[ActionType.SWAP.value] = -1e9
 
         # Full cut
         elif len(cut) == num_edges:
 
-            operator_logits[ActionType.ADD.value] = float("-inf")
-            operator_logits[ActionType.SWAP.value] = float("-inf")
+            operator_logits[ActionType.ADD.value] = -1e9
+            operator_logits[ActionType.SWAP.value] = -1e9
 
         # Don't stop immediately
         if state.step < MIN_STEPS_BEFORE_STOP:
 
-            operator_logits[ActionType.STOP.value] = float("-inf")
+            operator_logits[ActionType.STOP.value] = -1e9
+
+        # self._check_logits(
+        #         "operator_logits",
+        #         operator_logits
+        #     )
 
         operator_dist = Categorical(
             logits=operator_logits
         )
 
         operator = operator_dist.sample()
+
+        # print(
+        #     "SELECTED OPERATOR:",
+        #     ActionType(operator.item()),
+        #     flush=True
+        # )
 
         log_prob = operator_dist.log_prob(operator)
 
@@ -270,7 +281,18 @@ class HierarchicalSCBPolicy(nn.Module):
 
             for edge in cut:
 
-                add_logits[edge] = float("-inf")
+                add_logits[edge] = -1e9
+
+            # self._check_logits(
+            #     "add_logits",
+            #     add_logits
+            # )
+
+            # print(
+            #     "ADD logits:",
+            #     add_logits.detach(),
+            #     flush=True
+            # )
 
             edge_dist = Categorical(
                 logits=add_logits
@@ -298,12 +320,23 @@ class HierarchicalSCBPolicy(nn.Module):
 
             remove_logits = torch.full_like(
                 output["remove_logits"],
-                float("-inf")
+                -1e9
             )
 
             for edge in cut:
 
                 remove_logits[edge] = output["remove_logits"][edge]
+
+            # self._check_logits(
+            #     "remove_logits",
+            #     remove_logits
+            # )
+
+            # print(
+            #     "REMOVE logits:",
+            #     remove_logits.detach(),
+            #     flush=True
+            # )
 
             edge_dist = Categorical(
                 logits=remove_logits
@@ -333,7 +366,7 @@ class HierarchicalSCBPolicy(nn.Module):
 
             remove_logits = torch.full_like(
                 output["swap_remove_logits"],
-                float("-inf")
+                -1e9
             )
             # print("CUT =", cut)
             # print("CUT TYPE =", type(cut))
@@ -348,6 +381,17 @@ class HierarchicalSCBPolicy(nn.Module):
 
                 remove_logits[edge] = output["swap_remove_logits"][edge]
 
+            # self._check_logits(
+            #         "remove_logits",
+            #         remove_logits
+            #     )
+
+            # print(
+            #         "SWAP REMOVE logits:",
+            #         remove_logits.detach(),
+            #         flush=True
+            #     )
+
             remove_dist = Categorical(
                 logits=remove_logits
             )
@@ -361,10 +405,21 @@ class HierarchicalSCBPolicy(nn.Module):
             # Can't add edges already in cut
             for edge in cut:
 
-                add_logits[edge] = float("-inf")
+                add_logits[edge] = -1e9
 
             # Can't swap with itself
-            add_logits[remove_edge.item()] = float("-inf")
+            add_logits[remove_edge.item()] = -1e9
+
+            # self._check_logits(
+            #     "add_logits",
+            #     add_logits
+            # )
+
+            # print(
+            #     "SWAP ADD logits:",
+            #     add_logits.detach(),
+            #     flush=True
+            # )
 
             add_dist = Categorical(
                 logits=add_logits
@@ -440,17 +495,22 @@ class HierarchicalSCBPolicy(nn.Module):
 
         if len(cut) == 0:
 
-            operator_logits[ActionType.REMOVE.value] = float("-inf")
-            operator_logits[ActionType.SWAP.value] = float("-inf")
+            operator_logits[ActionType.REMOVE.value] = -1e9
+            operator_logits[ActionType.SWAP.value] = -1e9
 
         elif len(cut) == num_edges:
 
-            operator_logits[ActionType.ADD.value] = float("-inf")
-            operator_logits[ActionType.SWAP.value] = float("-inf")
+            operator_logits[ActionType.ADD.value] = -1e9
+            operator_logits[ActionType.SWAP.value] = -1e9
 
         if state.step < MIN_STEPS_BEFORE_STOP:
 
-            operator_logits[ActionType.STOP.value] = float("-inf")
+            operator_logits[ActionType.STOP.value] = -1e9
+
+        # self._check_logits(
+        #         "operator_logits",
+        #         operator_logits
+        #     )
 
         operator_dist = Categorical(
             logits=operator_logits
@@ -474,7 +534,12 @@ class HierarchicalSCBPolicy(nn.Module):
             add_logits = output["add_logits"].clone()
 
             for edge in cut:
-                add_logits[edge] = float("-inf")
+                add_logits[edge] = -1e9
+
+            # self._check_logits(
+            #     "add_logits",
+            #     add_logits
+            # )
 
             edge_dist = Categorical(
                 logits=add_logits
@@ -497,11 +562,16 @@ class HierarchicalSCBPolicy(nn.Module):
 
             remove_logits = torch.full_like(
                 output["remove_logits"],
-                float("-inf")
+                -1e9
             )
 
             for edge in cut:
                 remove_logits[edge] = output["remove_logits"][edge]
+
+            # self._check_logits(
+            #     "remove_logits",
+            #     remove_logits
+            # )
 
             edge_dist = Categorical(
                 logits=remove_logits
@@ -524,11 +594,16 @@ class HierarchicalSCBPolicy(nn.Module):
 
             remove_logits = torch.full_like(
                 output["swap_remove_logits"],
-                float("-inf")
+                -1e9
             )
 
             for edge in cut:
                 remove_logits[edge] = output["swap_remove_logits"][edge]
+
+            # self._check_logits(
+            #     "remove_logits",
+            #     remove_logits
+            # )
 
             remove_dist = Categorical(
                 logits=remove_logits
@@ -546,9 +621,14 @@ class HierarchicalSCBPolicy(nn.Module):
             add_logits = output["swap_add_logits"].clone()
 
             for edge in cut:
-                add_logits[edge] = float("-inf")
+                add_logits[edge] = -1e9
 
-            add_logits[action.remove_edge] = float("-inf")
+            add_logits[action.remove_edge] = -1e9
+
+            # self._check_logits(
+            #         "add_logits",
+            #         add_logits
+            #     )
 
             add_dist = Categorical(
                 logits=add_logits
@@ -568,3 +648,29 @@ class HierarchicalSCBPolicy(nn.Module):
         # ==================================================
 
         return log_prob, entropy
+    
+    def _check_logits(self, name, logits):
+
+        if torch.isnan(logits).any():
+
+            raise RuntimeError(
+                f"{name}: NaN LOGITS\n"
+                f"{logits}"
+            )
+
+        if torch.isposinf(logits).any():
+
+            raise RuntimeError(
+                f"{name}: +INF LOGITS\n"
+                f"{logits}"
+            )
+
+        finite = torch.isfinite(logits)
+
+        if not finite.any():
+
+            raise RuntimeError(
+                f"{name}: ALL LOGITS ARE -INF\n"
+                f"shape={tuple(logits.shape)}\n"
+                f"logits={logits}"
+            )
