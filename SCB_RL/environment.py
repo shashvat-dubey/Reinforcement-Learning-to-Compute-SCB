@@ -111,7 +111,7 @@ class SCBEnvironment:
 
     def _update_best_state(self):
 
-        if self.current_state.scb > self.best_state.scb:
+        if self.current_state.scb < self.best_state.scb:
 
             self.best_state = self.current_state.copy()
 
