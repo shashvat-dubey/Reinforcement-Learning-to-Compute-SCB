@@ -180,13 +180,13 @@ class PPOTrainer:
 
             embedding = encoding["graph_embedding"]
 
-            print(
-                f"embedding | "
-                f"min={embedding.min().item():.6f} "
-                f"max={embedding.max().item():.6f} "
-                f"mean={embedding.mean().item():.6f}",
-                flush=True
-            )
+            # print(
+            #     f"embedding | "
+            #     f"min={embedding.min().item():.6f} "
+            #     f"max={embedding.max().item():.6f} "
+            #     f"mean={embedding.mean().item():.6f}",
+            #     flush=True
+            # )
 
             if not torch.isfinite(embedding).all():
                 raise RuntimeError(
@@ -1127,15 +1127,15 @@ class PPOTrainer:
 
         if not torch.isfinite(tensor).all():
 
-            print(
-                f"\n!!! NON-FINITE TENSOR: {name}",
-                flush=True
-            )
+            # print(
+            #     f"\n!!! NON-FINITE TENSOR: {name}",
+            #     flush=True
+            # )
 
-            print(
-                tensor,
-                flush=True
-            )
+            # print(
+            #     tensor,
+            #     flush=True
+            # )
 
             raise RuntimeError(
                 f"Non-finite tensor detected: {name}"
@@ -1199,6 +1199,29 @@ if __name__ == "__main__":
         LOG_FILE,
         "a",
         encoding="utf-8"
+    )
+
+    import sys
+
+
+    class Tee:
+
+        def __init__(self, *streams):
+            self.streams = streams
+
+        def write(self, data):
+            for stream in self.streams:
+                stream.write(data)
+                stream.flush()
+
+        def flush(self):
+            for stream in self.streams:
+                stream.flush()
+
+
+    sys.stdout = Tee(
+        sys.__stdout__,
+        log_file
     )
 
 
