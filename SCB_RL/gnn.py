@@ -12,7 +12,7 @@ import torch.nn as nn
 
 from torch_geometric.data import Data
 from torch_geometric.nn import (
-    SAGEConv,
+    GINEConv,
     global_mean_pool
 )
 
@@ -168,9 +168,9 @@ class GraphBuilder:
 
         cut = state.cut
 
-        for edge in problem.edges:
+        for edge_idx, edge in enumerate(problem.edges):
 
-            is_cut = float(edge in cut)
+            is_cut = float(edge_idx in cut)
 
             # Forward edge
             features.append([is_cut])
@@ -233,154 +233,208 @@ class GraphBuilder:
 
 class SCBGraphEncoder(nn.Module):
 
-    """
-    GraphSAGE Encoder.
+        """
+        Edge-aware GNN Encoder.
 
-    Converts a graph into
+        Converts an SCB state into:
 
-        Node embeddings
+            Node embeddings
+            Edge embeddings
+            Graph embedding
 
-        Edge embeddings
+        Unlike the previous GraphSAGE encoder,
+        the current cut status (edge attribute)
+        participates directly in message passing.
+        """
 
-        Graph embedding
-    """
+        def __init__(
+            self,
+            hidden_dim=64,
+            num_layers=2
+        ):
 
-    def __init__(
-        self,
-        hidden_dim=64,
-        num_layers=2
-    ):
+            super().__init__()
 
-        super().__init__()
+            self.hidden_dim = hidden_dim
+            self.num_layers = num_layers
 
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
+            self.builder = GraphBuilder()
 
-        self.builder = GraphBuilder()
+            # --------------------------------------------------
+            # Edge Encoder
+            # --------------------------------------------------
+            #
+            # Current edge feature:
+            #
+            #     is_cut ∈ {0, 1}
+            #
+            # GINE requires edge features to be compatible
+            # with the node/message representation.
+            #
+            self.edge_encoder = nn.Sequential(
 
-        # --------------------------------------------------
-        # GraphSAGE Layers
-        # --------------------------------------------------
+                nn.Linear(1, hidden_dim),
 
-        self.convs = nn.ModuleList()
+                nn.ReLU(),
 
-        # Input:
-        # degree + endpoint flag = 2 features
+                nn.Linear(hidden_dim, hidden_dim)
 
-        in_channels = 2
+            )
 
-        for _ in range(num_layers):
+            # --------------------------------------------------
+            # GINE Layers
+            # --------------------------------------------------
 
-            self.convs.append(
+            self.convs = nn.ModuleList()
 
-                SAGEConv(
+            in_channels = 2
 
-                    in_channels,
+            for _ in range(num_layers):
 
-                    hidden_dim
+                mlp = nn.Sequential(
+
+                    nn.Linear(hidden_dim, hidden_dim),
+
+                    nn.ReLU(),
+
+                    nn.Linear(hidden_dim, hidden_dim)
 
                 )
 
+                self.convs.append(
+
+                    GINEConv(
+
+                        nn=mlp,
+
+                        edge_dim=hidden_dim
+
+                    )
+
+                )
+
+                in_channels = hidden_dim
+
+            # --------------------------------------------------
+            # Input Projection
+            # --------------------------------------------------
+            #
+            # GINE's node representation must live in the
+            # hidden dimension used by the convolution.
+            #
+            self.input_projection = nn.Linear(
+                2,
+                hidden_dim
             )
 
-            in_channels = hidden_dim
+        def forward(
+            self,
+            state: SCBState
+        ):
 
-    def forward(
-        self,
-        state: SCBState
-    ):
+            # ---------------------------------------------
+            # Build PyG Graph
+            # ---------------------------------------------
 
-        # ---------------------------------------------
-        # Build PyG Graph
-        # ---------------------------------------------
+            data = self.builder.build(state)
 
-        data = self.builder.build(state)
+            x = data.x
+            edge_index = data.edge_index
+            edge_attr = data.edge_attr
 
-        x = data.x
+            # ---------------------------------------------
+            # Project node features
+            # ---------------------------------------------
 
-        edge_index = data.edge_index
+            x = self.input_projection(x)
 
-        # ---------------------------------------------
-        # GraphSAGE
-        # ---------------------------------------------
+            # ---------------------------------------------
+            # Encode edge features
+            # ---------------------------------------------
 
-        for conv in self.convs:
+            edge_attr = self.edge_encoder(edge_attr)
 
-            x = conv(
+            # ---------------------------------------------
+            # Edge-aware message passing
+            # ---------------------------------------------
 
+            for conv in self.convs:
+
+                x = conv(
+                    x,
+                    edge_index,
+                    edge_attr
+                )
+
+                x = torch.relu(x)
+
+            # ---------------------------------------------
+            # Build edge embeddings
+            # ---------------------------------------------
+
+            edge_embeddings = self._build_edge_embeddings(
                 x,
-
-                edge_index
-
+                state
             )
 
-            x = torch.relu(x)
+            # ---------------------------------------------
+            # Graph embedding
+            # ---------------------------------------------
 
-        # ---------------------------------------------
-        # Stage 1 Output
-        # ---------------------------------------------
-        edge_embeddings = self._build_edge_embeddings(
-            x,
+            graph_embedding = x.mean(dim=0)
+
+            return {
+
+                "node_embeddings": x,
+
+                "edge_embeddings": edge_embeddings,
+
+                "graph_embedding": graph_embedding
+
+            }
+
+        def _build_edge_embeddings(
+            self,
+            node_embeddings,
             state
-        )
+        ):
+            """
+            Construct an embedding for every undirected edge.
 
-        graph_embedding = x.mean(dim=0)
+            Output dimension:
 
-        return {
+                64 + 64 + 1 = 129
+            """
 
-            "node_embeddings": x,
+            edge_embeddings = []
 
-            "edge_embeddings": edge_embeddings,
+            cut = state.cut
 
-            "graph_embedding": graph_embedding
+            for edge_idx, edge in enumerate(state.problem.edges):
 
-        }
-    
-    def _build_edge_embeddings(
-        self,
-        node_embeddings,
-        state
-    ):
-        """
-        Construct an embedding for every undirected edge.
-        """
+                u, v = edge
 
-        edge_embeddings = []
+                u = state.problem.node_to_idx[u]
+                v = state.problem.node_to_idx[v]
 
-        cut = state.cut
+                hu = node_embeddings[u]
+                hv = node_embeddings[v]
 
-        for edge in state.problem.edges:
+                is_cut = torch.tensor(
+                    [float(edge_idx in cut)],
+                    device=node_embeddings.device
+                )
 
-            u, v = edge
+                edge_embedding = torch.cat(
+                    [
+                        hu,
+                        hv,
+                        is_cut
+                    ]
+                )
 
-            u = state.problem.node_to_idx[u]
-            v = state.problem.node_to_idx[v]
+                edge_embeddings.append(
+                    edge_embedding
+                )
 
-            hu = node_embeddings[u]
-            hv = node_embeddings[v]
-
-            is_cut = torch.tensor(
-
-                [float(edge in cut)],
-
-                device=node_embeddings.device
-
-            )
-
-            edge_embedding = torch.cat(
-
-                [
-
-                    hu,
-
-                    hv,
-
-                    is_cut
-
-                ]
-
-            )
-
-            edge_embeddings.append(edge_embedding)
-
-        return torch.stack(edge_embeddings)
+            return torch.stack(edge_embeddings)

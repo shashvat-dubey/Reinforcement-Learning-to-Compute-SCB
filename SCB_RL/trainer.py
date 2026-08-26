@@ -17,7 +17,8 @@ import torch
 import random
 
 # SEED = 42
-
+num_rounds = 2
+SHUFFLE_GRAPHS = True
 # random.seed(SEED)
 # np.random.seed(SEED)
 # torch.manual_seed(SEED)
@@ -662,13 +663,13 @@ class PPOTrainer:
         # Number of Episodes
         # --------------------------------------------------
 
-        if episodes is None:
-            episodes = len(dataset)
+        # if episodes is None:
+        #     episodes = len(dataset)
 
-        episodes = min(
-            episodes,
-            len(dataset)
-        )
+        # episodes = min(
+        #     episodes,
+        #     len(dataset)
+        # )
 
         # --------------------------------------------------
         # Checkpoint Directory
@@ -682,249 +683,257 @@ class PPOTrainer:
         # --------------------------------------------------
         # Training Loop
         # --------------------------------------------------
+       
+        total_episodes = num_rounds * len(dataset)
 
-        for episode in range(
-            start_episode,
-            episodes
-        ):
+        episode = start_episode
+
+        for round_idx in range(num_rounds):
+
+            # Create graph ordering for this round
+            graph_indices = list(range(len(dataset)))
+
+            if SHUFFLE_GRAPHS:
+                random.shuffle(graph_indices)
 
             print()
             print("=" * 70)
-            print(
-                f"STARTING EPISODE "
-                f"{episode + 1}/{episodes}"
-            )
+            print(f"ROUND {round_idx + 1}/{num_rounds}")
             print("=" * 70)
 
-            # ----------------------------------------------
-            # Select Graph
-            # ----------------------------------------------
+            for graph_idx in graph_indices:
 
-            graph = dataset[episode]
+                # ----------------------------------------------
+                # Select Graph
+                # ----------------------------------------------
 
-            print(
-                f"Graph {graph['graph_id']} | "
-                f"Nodes={len(graph['nodes'])} | "
-                f"Edges={len(graph['edges'])} | "
-                f"Sessions={len(graph['sessions'])}"
-            )
+                graph = dataset[graph_idx]
 
-            # ----------------------------------------------
-            # Create Environment
-            # ----------------------------------------------
-
-            self.env = SCBEnvironment(
-                graph
-            )
-
-            # ----------------------------------------------
-            # Collect Episode
-            # ----------------------------------------------
-
-            episode_reward = (
-                self.collect_episode()
-            )
-
-            # IMPORTANT:
-            # Capture this BEFORE update() clears memory.
-
-            episode_length = len(
-                self.memory
-            )
-
-            print(
-                f"Episode collected | "
-                f"Reward={episode_reward} | "
-                f"Length={episode_length}"
-            )
-
-            # ----------------------------------------------
-            # PPO Update
-            # ----------------------------------------------
-
-            stats = self.update()
-
-            # ----------------------------------------------
-            # Record Result
-            # ----------------------------------------------
-
-            result = {
-
-                "episode":
-                    episode + 1,
-
-                "reward":
-                    episode_reward,
-
-                "episode_length":
-                    episode_length,
-
-                "policy_loss":
-                    stats["policy_loss"],
-
-                "value_loss":
-                    stats["value_loss"],
-
-                "entropy":
-                    stats["entropy"],
-
-                "total_loss":
-                    stats["total_loss"],
-
-            }
-
-            history.append(
-                result
-            )
-
-            # ----------------------------------------------
-            # Training Output
-            # ----------------------------------------------
-
-            print(
-                f"Episode {episode + 1:4d}/"
-                f"{episodes} | "
-                f"Reward {episode_reward:8.3f} | "
-                f"Length {episode_length:3d} | "
-                f"Policy {stats['policy_loss']:12.8f} | "
-                f"Value {stats['value_loss']:12.8f} | "
-                f"Entropy {stats['entropy']:8.4f}"
-            )
-
-            # ----------------------------------------------
-            # Checkpoint
-            # ----------------------------------------------
-
-            current_episode = (
-                episode + 1
-            )
-
-            if (
-                current_episode
-                % checkpoint_interval
-                == 0
-            ):
-
-                # ------------------------------------------
-                # Rolling checkpoint
-                # ------------------------------------------
-
-                checkpoint_path = os.path.join(
-
-                    checkpoint_dir,
-
-                    f"ppo_episode_{current_episode}.pt"
-
+                print(
+                    f"Graph {graph['graph_id']} | "
+                    f"Nodes={len(graph['nodes'])} | "
+                    f"Edges={len(graph['edges'])} | "
+                    f"Sessions={len(graph['sessions'])}"
                 )
 
-                self.save_checkpoint(
+                # ----------------------------------------------
+                # Create Environment
+                # ----------------------------------------------
 
-                    path=checkpoint_path,
-
-                    episode=current_episode,
-
-                    history=history
-
+                self.env = SCBEnvironment(
+                    graph
                 )
 
-                # ------------------------------------------
-                # Latest checkpoint
-                # ------------------------------------------
+                # ----------------------------------------------
+                # Collect Episode
+                # ----------------------------------------------
 
-                latest_path = os.path.join(
-
-                    checkpoint_dir,
-
-                    "latest.pt"
-
+                episode_reward = (
+                    self.collect_episode()
                 )
 
-                self.save_checkpoint(
+                # IMPORTANT:
+                # Capture this BEFORE update() clears memory.
 
-                    path=latest_path,
-
-                    episode=current_episode,
-
-                    history=history
-
+                episode_length = len(
+                    self.memory
                 )
 
-                # ------------------------------------------
-                # Remove old rolling checkpoints
-                # ------------------------------------------
+                print(
+                    f"Episode collected | "
+                    f"Reward={episode_reward} | "
+                    f"Length={episode_length}"
+                )
 
-                rolling = []
+                # ----------------------------------------------
+                # PPO Update
+                # ----------------------------------------------
 
-                for filename in os.listdir(
-                    checkpoint_dir
+                stats = self.update()
+
+                # ----------------------------------------------
+                # Record Result
+                # ----------------------------------------------
+
+                result = {
+
+                    "episode":
+                        episode + 1,
+
+                    "reward":
+                        episode_reward,
+
+                    "episode_length":
+                        episode_length,
+
+                    "policy_loss":
+                        stats["policy_loss"],
+
+                    "value_loss":
+                        stats["value_loss"],
+
+                    "entropy":
+                        stats["entropy"],
+
+                    "total_loss":
+                        stats["total_loss"],
+
+                }
+
+                history.append(
+                    result
+                )
+
+                # ----------------------------------------------
+                # Training Output
+                # ----------------------------------------------
+
+                print(
+                    f"Episode {episode + 1:4d}/"
+                    f"{total_episodes} | "
+                    f"Reward {episode_reward:8.3f} | "
+                    f"Length {episode_length:3d} | "
+                    f"Policy {stats['policy_loss']:12.8f} | "
+                    f"Value {stats['value_loss']:12.8f} | "
+                    f"Entropy {stats['entropy']:8.4f}"
+                )
+
+                # ----------------------------------------------
+                # Checkpoint
+                # ----------------------------------------------
+
+                current_episode = (
+                    episode + 1
+                )
+
+                if (
+                    current_episode
+                    % checkpoint_interval
+                    == 0
                 ):
 
-                    if (
-                        filename.startswith(
-                            "ppo_episode_"
-                        )
-                        and filename.endswith(
-                            ".pt"
-                        )
-                    ):
+                    # ------------------------------------------
+                    # Rolling checkpoint
+                    # ------------------------------------------
 
-                        full_path = os.path.join(
+                    checkpoint_path = os.path.join(
 
-                            checkpoint_dir,
+                        checkpoint_dir,
 
-                            filename
+                        f"ppo_episode_{current_episode}.pt"
 
-                        )
-
-                        rolling.append(
-                            full_path
-                        )
-
-                # Sort by episode number
-                rolling.sort(
-                    key=lambda path:
-                        int(
-                            os.path.basename(
-                                path
-                            )
-                            .replace(
-                                "ppo_episode_",
-                                ""
-                            )
-                            .replace(
-                                ".pt",
-                                ""
-                            )
-                        )
-                )
-
-                # ------------------------------------------
-                # Keep only newest N
-                # ------------------------------------------
-
-                while len(rolling) > max_checkpoints:
-
-                    old_checkpoint = rolling.pop(
-                        0
                     )
 
-                    try:
+                    self.save_checkpoint(
 
-                        os.remove(
-                            old_checkpoint
+                        path=checkpoint_path,
+
+                        episode=current_episode,
+
+                        history=history
+
+                    )
+
+                    # ------------------------------------------
+                    # Latest checkpoint
+                    # ------------------------------------------
+
+                    latest_path = os.path.join(
+
+                        checkpoint_dir,
+
+                        "latest.pt"
+
+                    )
+
+                    self.save_checkpoint(
+
+                        path=latest_path,
+
+                        episode=current_episode,
+
+                        history=history
+
+                    )
+
+                    # ------------------------------------------
+                    # Remove old rolling checkpoints
+                    # ------------------------------------------
+
+                    rolling = []
+
+                    for filename in os.listdir(
+                        checkpoint_dir
+                    ):
+
+                        if (
+                            filename.startswith(
+                                "ppo_episode_"
+                            )
+                            and filename.endswith(
+                                ".pt"
+                            )
+                        ):
+
+                            full_path = os.path.join(
+
+                                checkpoint_dir,
+
+                                filename
+
+                            )
+
+                            rolling.append(
+                                full_path
+                            )
+
+                    # Sort by episode number
+                    rolling.sort(
+                        key=lambda path:
+                            int(
+                                os.path.basename(
+                                    path
+                                )
+                                .replace(
+                                    "ppo_episode_",
+                                    ""
+                                )
+                                .replace(
+                                    ".pt",
+                                    ""
+                                )
+                            )
+                    )
+
+                    # ------------------------------------------
+                    # Keep only newest N
+                    # ------------------------------------------
+
+                    while len(rolling) > max_checkpoints:
+
+                        old_checkpoint = rolling.pop(
+                            0
                         )
 
-                        print(
-                            f"Removed old checkpoint: "
-                            f"{old_checkpoint}"
-                        )
+                        try:
 
-                    except OSError as e:
+                            os.remove(
+                                old_checkpoint
+                            )
 
-                        print(
-                            f"Warning: could not remove "
-                            f"{old_checkpoint}: {e}"
-                        )
+                            print(
+                                f"Removed old checkpoint: "
+                                f"{old_checkpoint}"
+                            )
+
+                        except OSError as e:
+
+                            print(
+                                f"Warning: could not remove "
+                                f"{old_checkpoint}: {e}"
+                            )
+
+                episode += 1
 
         # --------------------------------------------------
         # Return History
@@ -1151,11 +1160,11 @@ if __name__ == "__main__":
     # CONFIGURATION
     # ==========================================================
 
-    TOTAL_EPISODES = 100
+    NUM_ROUNDS = 2
 
     LOG_FILE = "ppo_training.txt"
 
-    CHECKPOINT_DIR = "checkpoints"
+    CHECKPOINT_DIR = "checkpoints_testing"
 
     LATEST_CHECKPOINT = os.path.join(
         CHECKPOINT_DIR,
@@ -1223,8 +1232,14 @@ if __name__ == "__main__":
         f"Dataset Size : {len(dataset)}"
     )
 
+    total_episodes = NUM_ROUNDS * len(dataset)
+
     log(
-        f"Target Episodes : {TOTAL_EPISODES}"
+        f"Training Rounds : {NUM_ROUNDS}"
+    )
+
+    log(
+        f"Total Episodes : {total_episodes}"
     )
 
 
@@ -1328,7 +1343,7 @@ if __name__ == "__main__":
     # ALREADY FINISHED?
     # ==========================================================
 
-    if start_episode >= TOTAL_EPISODES:
+    if start_episode >= total_episodes:
 
         log()
         log("=" * 70)
@@ -1364,8 +1379,6 @@ if __name__ == "__main__":
         history = trainer.train(
 
             dataset,
-
-            episodes=TOTAL_EPISODES,
 
             log_interval=5,
 
@@ -1453,7 +1466,7 @@ if __name__ == "__main__":
 
             FINAL_CHECKPOINT,
 
-            TOTAL_EPISODES,
+            total_episodes,
 
             history
 

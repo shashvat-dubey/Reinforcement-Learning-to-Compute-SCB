@@ -66,10 +66,12 @@ class SCBState:
 
     @property
     def scb(self):
-        """
-        Current Sparsest Cut Bound score.
-        """
-        return self.evaluation["fitness2"]
+        fitness2 = self.evaluation["fitness2"]
+
+        if fitness2 <= 0:
+            return float("inf")
+
+        return 1.0 / fitness2
 
     @property
     def full_cut_fitness(self):

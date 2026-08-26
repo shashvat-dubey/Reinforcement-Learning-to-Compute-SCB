@@ -6,6 +6,9 @@ checkpoints/
 
 tests for failure/
 SCB_RL/Tests/
+extra diagnostic stuff/
+diagnostics/
+
 
 dataset.pkl
 

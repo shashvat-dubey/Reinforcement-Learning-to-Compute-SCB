@@ -11,7 +11,10 @@ Author: SCB-RL
 """
 from GA_SCB.graph import SCBProblem
 from GA_SCB.graph import evaluate
-from .reward import compute_reward
+from .reward import (
+    compute_reward,
+    compute_reward_components,
+)
 from .actions import ActionType
 from .state import SCBState
 
@@ -109,11 +112,11 @@ class SCBEnvironment:
             step=self.episode_step
         )
 
-    def _update_best_state(self):
+    # def _update_best_state(self):
 
-        if self.current_state.scb < self.best_state.scb:
+    #     if self.current_state.scb < self.best_state.scb:
 
-            self.best_state = self.current_state.copy()
+    #         self.best_state = self.current_state.copy()
 
     def _get_info(self):
 
@@ -133,6 +136,18 @@ class SCBEnvironment:
 
             "sessions_separated": self.current_state.separated_count,
 
+            "reward_components": getattr(
+                        self,
+                        "_last_reward_components",
+                        {
+                            "separation": 0.0,
+                            "scb": 0.0,
+                            "terminal": 0.0,
+                            "time": 0.0,
+                            "total": 0.0,
+                        }
+                    ),
+
             "step": self.episode_step
         }
 
@@ -145,6 +160,14 @@ class SCBEnvironment:
         self.done = False
 
         self.episode_step = 0
+
+        self._last_reward_components = {
+            "separation": 0.0,
+            "scb": 0.0,
+            "time": 0.0,
+            "terminal": 0.0,
+            "total": 0.0,
+        }
 
         empty_cut = set()
 
@@ -244,12 +267,14 @@ class SCBEnvironment:
 
                 self.done = True
 
-            reward = compute_reward(
-                self.current_state,
-                self.current_state,
-                action,
-                invalid=True
-            )
+            self._last_reward_components = compute_reward_components(
+            self.current_state,
+            self.current_state,
+            action,
+            invalid=True,
+        )
+
+            reward = self._last_reward_components["total"]
 
             # --------------------------------------------------
             # If invalid action also ended the episode,
@@ -258,7 +283,13 @@ class SCBEnvironment:
 
             if self.done:
 
-                reward += self._compute_terminal_reward()
+                terminal_reward = self._compute_terminal_reward()
+
+                self._last_reward_components["terminal"] = terminal_reward
+
+                self._last_reward_components["total"] += terminal_reward
+
+                reward = self._last_reward_components["total"]
 
             state = self.current_state.copy()
 
@@ -295,6 +326,14 @@ class SCBEnvironment:
             # --------------------------------------------------
 
             terminal_reward = self._compute_terminal_reward()
+
+            self._last_reward_components = {
+                "separation": 0.0,
+                "scb": 0.0,
+                "time": 0.0,
+                "terminal": terminal_reward,
+                "total": terminal_reward,
+            }
 
             return (
 
@@ -334,17 +373,13 @@ class SCBEnvironment:
         # Normal reward
         # ------------------------------------------------------
 
-        reward = compute_reward(
+        self._last_reward_components = compute_reward_components(
+        old_state,
+        self.current_state,
+        action,
+    )
 
-            old_state,
-
-            self.current_state,
-
-            action,
-
-            done=self.done
-
-        )
+        reward = self._last_reward_components["total"]
 
         self._update_best_state()
 
@@ -354,7 +389,13 @@ class SCBEnvironment:
 
         if self.done:
 
-            reward += self._compute_terminal_reward()
+            terminal_reward = self._compute_terminal_reward()
+
+            self._last_reward_components["terminal"] = terminal_reward
+
+            self._last_reward_components["total"] += terminal_reward
+
+            reward = self._last_reward_components["total"]
 
         # ------------------------------------------------------
         # Return state
@@ -378,29 +419,28 @@ class SCBEnvironment:
 
     def _compute_terminal_reward(self):
         """
-        Compares the final RL SCB against the GA teacher SCB.
+        Final teacher reward.
 
-        Higher reward = better RL solution.
+        GA is used ONLY here.
 
-        Returns
-        -------
-        float
-            Terminal teacher reward.
+        Higher reward = better final RL solution.
         """
 
         cut = self.current_state.cut_size
         sep = self.current_state.separated_count
 
         # --------------------------------------------------
-        # No separated sessions = invalid SCB solution
+        # Invalid final solution
         # --------------------------------------------------
 
         if sep <= 0 or cut <= 0:
 
+            self._last_terminal_reward = -1.0
+
             return -1.0
 
         # --------------------------------------------------
-        # Actual RL SCB = cut / separated sessions
+        # RL SCB
         # --------------------------------------------------
 
         rl_scb = cut / sep
@@ -408,28 +448,82 @@ class SCBEnvironment:
         teacher_scb = self.teacher_scb
 
         # --------------------------------------------------
-        # Compare against GA
-        #
-        # teacher / RL:
-        #
-        #   = 1  -> matched GA
-        #   > 1  -> RL is better
-        #   < 1  -> RL is worse
+        # GA-relative quality
         # --------------------------------------------------
 
-        reward = teacher_scb / rl_scb
-
-        # --------------------------------------------------
-        # Prevent extreme values
-        # --------------------------------------------------
-
-        reward = max(
-            -1.0,
-            min(reward, 2.0)
+        quality_reward = (
+            teacher_scb
+            / max(rl_scb, 1e-8)
         )
 
-        return reward
+        quality_reward = max(
+            0.0,
+            min(quality_reward, 2.0)
+        )
 
+        # --------------------------------------------------
+        # Efficiency penalty
+        # --------------------------------------------------
+
+        step_budget = max(
+            0.25 * len(self.problem.edges)
+            + 2.0 * len(self.problem.sessions),
+            1.0
+        )
+
+        efficiency_penalty = (
+            0.05
+            * self.episode_step
+            / step_budget
+        )
+
+        efficiency_penalty = min(
+            efficiency_penalty,
+            0.25
+        )
+
+        # --------------------------------------------------
+        # Final reward
+        # --------------------------------------------------
+
+        terminal_reward = (
+            quality_reward
+            - efficiency_penalty
+        )
+
+        terminal_reward = max(
+            -1.0,
+            min(terminal_reward, 2.0)
+        )
+
+        self._last_terminal_reward = terminal_reward
+
+        return terminal_reward
+    
+
+    def _update_best_state(self):
+
+        current = self.current_state
+        best = self.best_state
+
+        # First valid solution
+        if (
+            best.separated_count <= 0
+            and current.separated_count > 0
+        ):
+            self.best_state = current.copy()
+            return
+
+        # Both are valid
+        if (
+            current.separated_count > 0
+            and best.separated_count > 0
+            and current.scb < best.scb
+        ):
+            self.best_state = current.copy()
+
+
+    
     # ==========================================================
     # Render
     # ==========================================================
