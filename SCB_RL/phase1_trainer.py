@@ -144,15 +144,17 @@ class PPOTrainer:
 
         )
 
+        # Episode diagnostics populated by collect_episode().
+        self.last_episode_info = {}
+
     def collect_episode(self):
         """
         Runs one complete episode and stores the rollout
         inside PPO memory.
 
-        Returns
-        -------
-        float
-            Total episode reward.
+        Per-step logging is intentionally disabled to keep
+        training logs compact. Episode-level statistics are
+        printed after the episode finishes.
         """
 
         self.memory.clear()
@@ -160,10 +162,9 @@ class PPOTrainer:
         state = self.env.reset()
 
         total_reward = 0.0
-
         done = False
 
-        # Per-episode action statistics.
+        # Actual actions selected during this episode.
         action_counts = {
             "ADD": 0,
             "REMOVE": 0,
@@ -171,46 +172,24 @@ class PPOTrainer:
             "STOP": 0,
         }
 
-        # Keep the final environment information so the
-        # trainer can report final/best RL SCB after the episode.
-        final_info = None
-
         while not done:
 
-            # Concise per-step logging only.
+            # ------------------------------------------
+            # GNN
+            # ------------------------------------------
+
             encoding = self.encoder(state)
 
             embedding = encoding["graph_embedding"]
-
-            # print(
-            #     f"embedding | "
-            #     f"min={embedding.min().item():.6f} "
-            #     f"max={embedding.max().item():.6f} "
-            #     f"mean={embedding.mean().item():.6f}",
-            #     flush=True
-            # )
 
             if not torch.isfinite(embedding).all():
                 raise RuntimeError(
                     f"NON-FINITE GRAPH EMBEDDING:\n{embedding}"
                 )
-           
-            # ------------------------------------------
-            # Check GNN
-            # ------------------------------------------
-
-            # self._check_tensor(
-            #     "graph_embedding",
-            #     encoding["graph_embedding"]
-            # )
-
-            # print("      Encoding done", flush=True)
 
             # ------------------------------------------
             # Policy
             # ------------------------------------------
-
-            # print("      Sampling action...", flush=True)
 
             action, log_prob, entropy = self.policy.sample_action(
                 encoding,
@@ -225,33 +204,11 @@ class PPOTrainer:
             if not torch.isfinite(entropy):
                 raise RuntimeError(
                     f"NON-FINITE ENTROPY: {entropy}"
-    )
-
-
-            # self._check_tensor(
-            #     "new_log_prob",
-            #     log_prob
-            # )
-
-            # self._check_tensor(
-            #     "entropy",
-            #     entropy
-            # )
-
-            # print(
-            #     f"      Action: {action}",
-            #     flush=True
-            # )
+                )
 
             # ------------------------------------------
             # Critic
             # ------------------------------------------
-
-            # print("      Critic...", flush=True)
-
-            # value = self.critic(
-            #     encoding["graph_embedding"]
-            # )
 
             value = self.critic(
                 encoding["graph_embedding"]
@@ -260,40 +217,18 @@ class PPOTrainer:
             if not torch.isfinite(value):
                 raise RuntimeError(
                     f"NON-FINITE VALUE: {value}"
-                    )
-            # self._check_tensor(
-            #     "value",
-            #     value
-            # )
-
-            # print("      Critic done", flush=True)
+                )
 
             # ------------------------------------------
             # Environment
             # ------------------------------------------
 
-            # print("      Environment step...", flush=True)
+            next_state, reward, done, info = self.env.step(action)
 
             action_name = action.action_type.name
-            if action_name not in action_counts:
-                action_counts[action_name] = 0
-            action_counts[action_name] += 1
 
-            next_state, reward, done, info = self.env.step(
-                action
-            )
-
-            final_info = info
-            
-            print(
-                f"  Step {state.step:3d} | "
-                f"Action={action.action_type.name:<6} | "
-                f"Cut={state.cut_size:3d} | "
-                f"Sep={state.separated_count:3d} | "
-                f"Reward={reward: .5f} | "
-                f"CutSet={sorted(state.cut)}",
-                flush=True
-            )
+            if action_name in action_counts:
+                action_counts[action_name] += 1
 
             # ------------------------------------------
             # Store Transition
@@ -312,15 +247,38 @@ class PPOTrainer:
 
             state = next_state
 
-        # Final episode metrics.  These are logging/evaluation
-        # statistics only and do not affect PPO reward.
-        total_actions = sum(action_counts.values())
+        # --------------------------------------------------
+        # Episode-level solution statistics
+        # --------------------------------------------------
 
-        self.last_episode_metrics = {
-            "action_counts": action_counts,
-            "total_actions": total_actions,
-            "final_info": final_info or {},
-            "final_state": state,
+        final_scb = state.scb
+        final_cut = state.cut_size
+        final_sep = state.separated_count
+
+        best_scb = getattr(self.env, "best_scb", None)
+        best_step = getattr(self.env, "best_step", None)
+
+        # Keep the actual best cut, if the environment tracked it.
+        best_state = getattr(self.env, "best_state", None)
+
+        if best_state is not None:
+            best_cut = sorted(best_state.cut)
+            best_sep = best_state.separated_count
+        else:
+            best_cut = []
+            best_sep = 0
+
+        # Store episode diagnostics for the trainer loop.
+        self.last_episode_info = {
+            "teacher_scb": getattr(self.env, "teacher_scb", None),
+            "final_scb": final_scb,
+            "final_cut": final_cut,
+            "final_sep": final_sep,
+            "best_scb": best_scb,
+            "best_step": best_step,
+            "best_cut": best_cut,
+            "best_sep": best_sep,
+            "action_counts": dict(action_counts),
         }
 
         return total_reward
@@ -741,7 +699,8 @@ class PPOTrainer:
                 # ----------------------------------------------
 
                 self.env = SCBEnvironment(
-                    graph
+                    graph,
+                    max_steps=100
                 )
 
                 # ----------------------------------------------
@@ -766,133 +725,21 @@ class PPOTrainer:
                 stats = self.update()
 
                 # ----------------------------------------------
-                # Episode metrics
-                # ----------------------------------------------
-
-                episode_metrics = getattr(
-                    self,
-                    "last_episode_metrics",
-                    {}
-                )
-
-                action_counts = episode_metrics.get(
-                    "action_counts",
-                    {}
-                )
-
-                total_actions = episode_metrics.get(
-                    "total_actions",
-                    episode_length
-                )
-
-                final_info = episode_metrics.get(
-                    "final_info",
-                    {}
-                )
-
-                final_state = episode_metrics.get(
-                    "final_state",
-                    None
-                )
-
-                # Environment tracks the best RL SCB found
-                # during this episode.
-                best_rl_scb = final_info.get(
-                    "best_scb",
-                    getattr(self.env, "best_scb", None)
-                )
-
-                best_rl_step = final_info.get(
-                    "best_step",
-                    getattr(self.env, "best_step", None)
-                )
-
-                # Final state SCB is distinct from best SCB.
-                final_rl_scb = final_info.get(
-                    "current_scb",
-                    getattr(final_state, "scb", None)
-                    if final_state is not None
-                    else None
-                )
-
-                final_cut_size = final_info.get(
-                    "cut_size",
-                    getattr(final_state, "cut_size", None)
-                    if final_state is not None
-                    else None
-                )
-
-                final_separation = final_info.get(
-                    "sessions_separated",
-                    getattr(final_state, "separated_count", None)
-                    if final_state is not None
-                    else None
-                )
-
-                ga_scb = graph.get(
-                    "ga_scb",
-                    None
-                )
-
-                # ----------------------------------------------
                 # Record Result
                 # ----------------------------------------------
+
+                episode_info = self.last_episode_info
 
                 result = {
 
                     "episode":
                         episode + 1,
 
-                    "graph_id":
-                        graph["graph_id"],
-
                     "reward":
                         episode_reward,
 
                     "episode_length":
                         episode_length,
-
-                    "ga_scb":
-                        ga_scb,
-
-                    "final_rl_scb":
-                        final_rl_scb,
-
-                    "best_rl_scb":
-                        best_rl_scb,
-
-                    "best_rl_step":
-                        best_rl_step,
-
-                    "final_cut_size":
-                        final_cut_size,
-
-                    "final_separation":
-                        final_separation,
-
-                    "add_count":
-                        action_counts.get("ADD", 0),
-
-                    "remove_count":
-                        action_counts.get("REMOVE", 0),
-
-                    "swap_count":
-                        action_counts.get("SWAP", 0),
-
-                    "stop_count":
-                        action_counts.get("STOP", 0),
-
-                    "add_rate":
-                        action_counts.get("ADD", 0) / max(total_actions, 1),
-
-                    "remove_rate":
-                        action_counts.get("REMOVE", 0) / max(total_actions, 1),
-
-                    "swap_rate":
-                        action_counts.get("SWAP", 0) / max(total_actions, 1),
-
-                    "stop_rate":
-                        action_counts.get("STOP", 0) / max(total_actions, 1),
 
                     "policy_loss":
                         stats["policy_loss"],
@@ -906,6 +753,34 @@ class PPOTrainer:
                     "total_loss":
                         stats["total_loss"],
 
+                    # Phase-1 SCB diagnostics.
+                    "teacher_scb":
+                        episode_info.get("teacher_scb"),
+
+                    "final_scb":
+                        episode_info.get("final_scb"),
+
+                    "final_cut":
+                        episode_info.get("final_cut"),
+
+                    "final_sep":
+                        episode_info.get("final_sep"),
+
+                    "best_scb":
+                        episode_info.get("best_scb"),
+
+                    "best_step":
+                        episode_info.get("best_step"),
+
+                    "best_cut":
+                        episode_info.get("best_cut"),
+
+                    "best_sep":
+                        episode_info.get("best_sep"),
+
+                    "action_counts":
+                        episode_info.get("action_counts", {}),
+
                 }
 
                 history.append(
@@ -913,104 +788,93 @@ class PPOTrainer:
                 )
 
                 # ----------------------------------------------
-                # Episode Summary
+                # Training Output
                 # ----------------------------------------------
 
-                def _fmt_scb(value):
+                # ----------------------------------------------
+                # Compact Episode Summary
+                # ----------------------------------------------
+
+                teacher_scb = episode_info.get("teacher_scb")
+                final_scb = episode_info.get("final_scb")
+                best_scb = episode_info.get("best_scb")
+                best_step = episode_info.get("best_step")
+
+                def fmt_scb(value):
                     if value is None:
                         return "None"
-                    try:
-                        value = float(value)
-                        if not np.isfinite(value):
-                            return "inf" if value > 0 else "-inf"
-                        return f"{value:.6f}"
-                    except (TypeError, ValueError):
-                        return str(value)
+                    if value == float("inf"):
+                        return "inf"
+                    return f"{value:.6f}"
 
-                def _action_line(name):
-                    count = action_counts.get(name, 0)
-                    rate = (
-                        100.0 * count / max(total_actions, 1)
-                    )
-                    return (
-                        f"{name:<7} : "
-                        f"{count:3d} / {total_actions:<3d} "
-                        f"({rate:6.2f}%)"
-                    )
-
-                print()
-                print("-" * 70)
-                print(
-                    f"EPISODE {episode + 1:4d}/{total_episodes} SUMMARY",
-                    flush=True
-                )
-                print("-" * 70)
-                print(
-                    f"GA SCB         : {_fmt_scb(ga_scb)}",
-                    flush=True
-                )
-                print(
-                    f"Final RL SCB   : {_fmt_scb(final_rl_scb)}",
-                    flush=True
-                )
-                print(
-                    f"Best RL SCB    : {_fmt_scb(best_rl_scb)}",
-                    flush=True
-                )
-                print(
-                    f"Best found @   : "
-                    f"{best_rl_step if best_rl_step is not None else 'None'}",
-                    flush=True
-                )
-                print(
-                    f"Final Cut      : "
-                    f"{final_cut_size if final_cut_size is not None else 'None'}",
-                    flush=True
-                )
-                print(
-                    f"Final Separate : "
-                    f"{final_separation if final_separation is not None else 'None'}",
-                    flush=True
-                )
-                print()
-                print("ACTION USAGE")
-                print(_action_line("ADD"), flush=True)
-                print(_action_line("REMOVE"), flush=True)
-                print(_action_line("SWAP"), flush=True)
-                print(_action_line("STOP"), flush=True)
-                print()
-                print(
-                    f"Total Reward   : {episode_reward: .6f}",
-                    flush=True
-                )
-                print(
-                    f"Episode Steps  : {episode_length}",
-                    flush=True
-                )
-                print()
-                print("PPO")
-                print(
-                    f"Policy Loss    : {stats['policy_loss']: .6f}",
-                    flush=True
-                )
-                print(
-                    f"Value Loss     : {stats['value_loss']: .6f}",
-                    flush=True
-                )
-                print(
-                    f"Entropy        : {stats['entropy']: .6f}",
-                    flush=True
-                )
-                print(
-                    f"Total Loss     : {stats['total_loss']: .6f}",
-                    flush=True
+                counts = episode_info.get(
+                    "action_counts",
+                    {}
                 )
 
-                # Keep the original compact one-line training marker.
+                action_total = sum(counts.values())
+
+                print()
                 print(
                     f"Episode {episode + 1:4d}/{total_episodes} | "
-                    f"Total Reward={episode_reward: .5f} | "
+                    f"Graph {graph['graph_id']} | "
+                    f"N={len(graph['nodes'])} "
+                    f"E={len(graph['edges'])} "
+                    f"S={len(graph['sessions'])}",
+                    flush=True
+                )
+
+                print(
+                    f"  Reward={episode_reward: .5f} | "
                     f"Steps={episode_length}",
+                    flush=True
+                )
+
+                print(
+                    f"  GA SCB={fmt_scb(teacher_scb)} | "
+                    f"Final SCB={fmt_scb(final_scb)} | "
+                    f"Best SCB={fmt_scb(best_scb)} | "
+                    f"Best@={best_step}",
+                    flush=True
+                )
+
+                print(
+                    f"  Final Cut={episode_info.get('final_cut')} | "
+                    f"Final Sep={episode_info.get('final_sep')}",
+                    flush=True
+                )
+
+                print(
+                    f"  Best Cut={episode_info.get('best_cut')} | "
+                    f"Best Sep={episode_info.get('best_sep')}",
+                    flush=True
+                )
+
+                if action_total > 0:
+                    print(
+                        "  Actions | "
+                        f"ADD={counts.get('ADD', 0)} "
+                        f"({100 * counts.get('ADD', 0) / action_total:5.1f}%) | "
+                        f"REMOVE={counts.get('REMOVE', 0)} "
+                        f"({100 * counts.get('REMOVE', 0) / action_total:5.1f}%) | "
+                        f"SWAP={counts.get('SWAP', 0)} "
+                        f"({100 * counts.get('SWAP', 0) / action_total:5.1f}%) | "
+                        f"STOP={counts.get('STOP', 0)} "
+                        f"({100 * counts.get('STOP', 0) / action_total:5.1f}%)",
+                        flush=True
+                    )
+                else:
+                    print(
+                        "  Actions | ADD=0 | REMOVE=0 | SWAP=0 | STOP=0",
+                        flush=True
+                    )
+
+                print(
+                    f"  PPO | "
+                    f"Policy={stats['policy_loss']: .8f} | "
+                    f"Value={stats['value_loss']: .8f} | "
+                    f"Entropy={stats['entropy']: .4f} | "
+                    f"Total={stats['total_loss']: .8f}",
                     flush=True
                 )
 
@@ -1477,6 +1341,10 @@ if __name__ == "__main__":
 
     log(
         f"Total Episodes : {total_episodes}"
+    )
+
+    log(
+        "Max Steps / Episode : 100"
     )
 
 
