@@ -138,6 +138,19 @@ ENTROPY_COEF = 0.01
 VALUE_COEF = 0.5
 PPO_EPOCHS = 1
 
+# ----------------------------------------------------------
+# PHASE 2 STOP EXPLORATION
+# ----------------------------------------------------------
+
+# Give STOP a small amount of exploration probability
+# after the minimum number of steps.
+#
+# This is handled INSIDE policy.py so that the sampled
+# action and PPO log-probability remain consistent.
+
+STOP_EXPLORATION = 0.01
+MIN_STEPS_BEFORE_STOP = 5
+
 
 # ==========================================================
 # DETERMINISM / PERFORMANCE
@@ -470,6 +483,14 @@ class Phase2PPOTrainer:
 
         self.policy.load_state_dict(
             checkpoint["policy_state_dict"]
+        )
+
+        self.policy.set_stop_exploration(
+            STOP_EXPLORATION
+        )
+
+        self.policy.min_steps_before_stop = (
+            MIN_STEPS_BEFORE_STOP
         )
 
         self.critic.load_state_dict(
@@ -1012,7 +1033,12 @@ if __name__ == "__main__":
     # ------------------------------------------------------
 
     encoder = SCBGraphEncoder()
-    policy = HierarchicalSCBPolicy()
+
+    policy = HierarchicalSCBPolicy(
+        stop_exploration=STOP_EXPLORATION,
+        min_steps_before_stop=MIN_STEPS_BEFORE_STOP,
+    )
+
     critic = SCBCritic()
 
     trainer = Phase2PPOTrainer(

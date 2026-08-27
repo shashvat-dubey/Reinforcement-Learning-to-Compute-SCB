@@ -15,3 +15,28 @@ Total Phase-2 episodes     : 800
 Phase-2 checkpoints        : checkpoints\phase 2 checkpoints
 
 Using device: cpu
+
+==============================================================================
+SCB-RL PHASE 2 TRAINING
+==============================================================================
+Goal: learn when a sufficiently good current SCB should STOP.
+GA SCB: evaluation only; NEVER part of Phase-2 reward.
+
+Dataset size              : 1000
+Training graphs            : 0..799 (800)
+Validation graphs          : 800..999 (200)
+Validation graphs are NEVER passed to the trainer.
+Rounds                     : 1
+Episodes / round           : 800
+Total Phase-2 episodes     : 800
+Phase-2 checkpoints        : checkpoints\phase 2 checkpoints
+
+Using device: cpu
+
+==============================================================================
+INITIALIZING PHASE 2 FROM PHASE 1
+==============================================================================
+Phase-1 checkpoint: checkpoints\phase 1 checkpoints\latest.pt
+[Phase 1 -> Phase 2] Loaded model weights: checkpoints\phase 1 checkpoints\latest.pt
+[Phase 1 -> Phase 2] Optimizer reset for Phase 2.
+Starting Phase 2 at episode 1.
