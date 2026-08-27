@@ -1,48 +1,48 @@
 """
 SCB RL Environment
-V2-D
+==================
 
-The environment exposes the SCB problem to the RL agent.
+Curriculum-based environment for the Sparsest Cut Bound
+reinforcement-learning project.
 
-GA / teacher information
-------------------------
+CURRENTLY IMPLEMENTED
+---------------------
+Phase 1:
+    Learn to construct low-SCB cuts.
 
-The GA solution is retained ONLY for:
+    Available operations:
+        ADD
+        REMOVE
+        SWAP
 
-    - evaluation
-    - logging
-    - post-training comparison
+    STOP is intentionally disabled.
 
-The GA solution NEVER contributes to the PPO reward.
+    Episodes terminate automatically after max_steps.
 
-RL reward
+FUTURE PHASES
+-------------
+Phase 2:
+    Learn when to STOP.
+
+Phase 3:
+    Learn aggressive SCB minimization.
+
+Phase 4:
+    Joint construction + stopping + optimization.
+
+IMPORTANT
 ---------
+The GA evaluator is used to evaluate the cut and obtain the
+SCB/separation state.
 
-Normal transitions use:
+The GA solution itself is NOT used in the RL reward.
 
-    1. SCB-aware separation progress
-    2. SCB improvement
-    3. New-best SCB bonus
-    4. Mild regression penalty
-    5. Graph-size-scaled time penalty
+The following teacher values are retained only for:
+    - logging
+    - evaluation
+    - comparison after training
 
-STOP uses:
-
-    valid solution
-        -> reward based on SCB quality
-
-    invalid solution
-        -> strong penalty
-
-Temporary restructuring is allowed:
-
-    good SCB
-        ↓
-    invalid / inf
-        ↓
-    better SCB
-
-This is intentional.
+They must never influence PPO reward.
 """
 
 
@@ -53,6 +53,10 @@ from GA_SCB.graph import evaluate
 from .reward import (
     compute_reward,
     compute_reward_components,
+    PHASE_CONSTRUCTION,
+    PHASE_TERMINATION,
+    PHASE_OPTIMIZATION,
+    PHASE_JOINT,
 )
 
 
@@ -61,14 +65,14 @@ from .state import SCBState
 
 
 # ==========================================================
-# Numerical stability
+# CONSTANTS
 # ==========================================================
 
 EPSILON = 1e-8
 
 
 # ==========================================================
-# Environment
+# SCB ENVIRONMENT
 # ==========================================================
 
 class SCBEnvironment:
@@ -76,51 +80,62 @@ class SCBEnvironment:
     def __init__(
         self,
         graph,
-        max_steps=100
+        max_steps=30,
+        phase=PHASE_CONSTRUCTION,
     ):
+        """
+        Create an SCB reinforcement-learning environment.
 
-        # --------------------------------------------------
-        # Original graph
-        # --------------------------------------------------
+        Parameters
+        ----------
+        graph :
+            Dataset graph dictionary.
+
+        max_steps :
+            Maximum number of environment actions before
+            automatic episode termination.
+
+        phase :
+            Curriculum phase.
+
+            1 = construction
+            2 = termination
+            3 = optimization
+            4 = joint
+        """
+
+        # ==================================================
+        # GRAPH
+        # ==================================================
 
         self.graph = graph
 
 
-        # --------------------------------------------------
-        # SCB problem
-        # --------------------------------------------------
+        # ==================================================
+        # SCB PROBLEM
+        # ==================================================
 
         self.problem = SCBProblem(
-
             graph["nodes"],
-
             graph["edges"],
-
-            graph["sessions"]
-
+            graph["sessions"],
         )
 
 
-        # --------------------------------------------------
-        # GA / teacher information
+        # ==================================================
+        # GA / TEACHER INFORMATION
+        # ==================================================
         #
-        # IMPORTANT:
-        # These values are NEVER used by reward.py.
+        # Retained ONLY for evaluation and logging.
         #
-        # They remain available for evaluation/logging.
-        # --------------------------------------------------
+        # These values are NEVER passed into the reward.
+        #
 
-        self.teacher_scb = (
-            graph["ga_scb"]
-        )
+        self.teacher_scb = graph["ga_scb"]
 
-        self.teacher_cut = (
-            graph["ga_cut"]
-        )
+        self.teacher_cut = graph["ga_cut"]
 
-        self.teacher_sep = (
-            graph["ga_sep"]
-        )
+        self.teacher_sep = graph["ga_sep"]
 
         self.teacher_cut_edges = (
             graph["ga_cut_edges"]
@@ -131,16 +146,26 @@ class SCBEnvironment:
         )
 
 
-        # --------------------------------------------------
-        # Environment configuration
-        # --------------------------------------------------
+        # ==================================================
+        # CURRICULUM CONFIGURATION
+        # ==================================================
 
-        self.max_steps = max_steps
+        self.phase = phase
+
+        self.max_steps = int(
+            max_steps
+        )
+
+        if self.max_steps <= 0:
+
+            raise ValueError(
+                "max_steps must be greater than zero."
+            )
 
 
-        # --------------------------------------------------
-        # Runtime state
-        # --------------------------------------------------
+        # ==================================================
+        # RUNTIME STATE
+        # ==================================================
 
         self.current_state = None
 
@@ -151,44 +176,57 @@ class SCBEnvironment:
         self.done = False
 
 
-        # --------------------------------------------------
-        # SCB bookkeeping
-        # --------------------------------------------------
+        # ==================================================
+        # SCB BOOKKEEPING
+        # ==================================================
 
-        # Last finite SCB encountered.
+        # Most recent finite SCB.
+
         self.previous_valid_scb = None
 
-        # Best finite SCB discovered this episode.
+
+        # Best finite SCB discovered during this episode.
+
         self.best_scb = None
 
-        # Step where best SCB was found.
+
+        # Step at which the best SCB was found.
+
         self.best_step = None
 
 
-        # --------------------------------------------------
-        # Reward diagnostics
-        # --------------------------------------------------
+        # ==================================================
+        # REWARD DIAGNOSTICS
+        # ==================================================
 
         self._last_reward_components = {
 
-            "separation": 0.0,
+            "separation":
+                0.0,
 
-            "scb": 0.0,
+            "scb":
+                0.0,
 
-            "best_bonus": 0.0,
+            "best_bonus":
+                0.0,
 
-            "stop": 0.0,
+            "stop":
+                0.0,
 
-            "time": 0.0,
+            "final":
+                0.0,
 
-            "total": 0.0,
+            "time":
+                0.0,
 
+            "total":
+                0.0,
         }
 
 
-        # --------------------------------------------------
-        # Action dispatch
-        # --------------------------------------------------
+        # ==================================================
+        # ACTION DISPATCH
+        # ==================================================
 
         self._ACTION_MAP = {
 
@@ -201,73 +239,194 @@ class SCBEnvironment:
             ActionType.SWAP:
                 self._apply_swap,
 
+            # STOP remains in the map because later
+            # curriculum phases will use it.
             ActionType.STOP:
                 self._apply_stop,
-
         }
 
 
-    # ======================================================
-    # Private Helpers
-    # ======================================================
+    # ==========================================================
+    # PRIVATE HELPERS
+    # ==========================================================
+
+    def _is_valid_scb(
+        self,
+        state,
+    ):
+        """
+        Return True when a state contains a meaningful SCB.
+        """
+
+        if state is None:
+
+            return False
+
+
+        if state.separated_count <= 0:
+
+            return False
+
+
+        if state.cut_size <= 0:
+
+            return False
+
+
+        try:
+
+            scb = float(
+                state.scb
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            return False
+
+
+        if scb == float("inf"):
+
+            return False
+
+
+        if scb != scb:
+
+            return False
+
+
+        if scb <= EPSILON:
+
+            return False
+
+
+        return True
+
+
+    # ==========================================================
+    # BUILD STATE
+    # ==========================================================
 
     def _build_state(
         self,
-        cut
+        cut,
     ):
         """
-        Convert RL cut representation into the tuple
-        representation expected by the GA evaluator.
+        Convert the RL cut representation into the format
+        expected by the SCB evaluator.
 
-        RL representation:
+        Internally the RL environment represents a cut as:
+
             integer edge indices
 
-        GA representation:
+        The evaluator receives:
+
             edge tuples
+
+        The resulting SCBState stores the evaluated
+        representation expected by the rest of the RL system.
         """
 
         # --------------------------------------------------
-        # Normalize the RL cut to integer indices.
-        #
-        # This keeps the internal SCBState representation
-        # consistent with the action/policy code.
+        # Normalize cut to integer edge indices.
         # --------------------------------------------------
 
         normalized_cut = set()
 
+
         for edge in cut:
+
+            # ----------------------------------------------
+            # Already an integer edge index
+            # ----------------------------------------------
 
             if isinstance(
                 edge,
-                int
+                int,
             ):
+
+                if (
+                    edge < 0
+                    or edge >= len(self.problem.edges)
+                ):
+
+                    raise IndexError(
+                        f"Edge index out of range: {edge}"
+                    )
+
 
                 normalized_cut.add(
                     edge
                 )
 
-            elif isinstance(
+                continue
+
+
+            # ----------------------------------------------
+            # Edge tuple
+            # ----------------------------------------------
+
+            if isinstance(
                 edge,
-                tuple
+                tuple,
             ):
 
-                # Edge tuple -> integer index.
-                normalized_cut.add(
-                    self.problem.edge_to_idx[
-                        edge
-                    ]
+                edge_tuple = tuple(
+                    edge
                 )
 
-            else:
 
-                raise TypeError(
-                    "Unsupported cut edge "
-                    f"type: {type(edge)}"
-                )
+                # Exact orientation.
+
+                if edge_tuple in self.problem.edge_to_idx:
+
+                    normalized_cut.add(
+                        self.problem.edge_to_idx[
+                            edge_tuple
+                        ]
+                    )
+
+                    continue
+
+
+                # Try reverse orientation.
+
+                if len(edge_tuple) == 2:
+
+                    reverse_edge = (
+                        edge_tuple[1],
+                        edge_tuple[0],
+                    )
+
+
+                    if (
+                        reverse_edge
+                        in self.problem.edge_to_idx
+                    ):
+
+                        normalized_cut.add(
+                            self.problem.edge_to_idx[
+                                reverse_edge
+                            ]
+                        )
+
+                        continue
+
+
+            # ----------------------------------------------
+            # Unsupported edge representation
+            # ----------------------------------------------
+
+            raise TypeError(
+                "Unsupported cut edge "
+                f"type/value: {type(edge)} / {edge}"
+            )
 
 
         # --------------------------------------------------
-        # Convert indices -> actual graph edge tuples.
+        # Convert indices -> actual graph edges.
         # --------------------------------------------------
 
         ga_cut = {
@@ -275,74 +434,100 @@ class SCBEnvironment:
             self.problem.edges[i]
 
             for i in normalized_cut
-
         }
 
 
         # --------------------------------------------------
-        # Evaluate SCB.
+        # Evaluate current cut.
         #
-        # NOTE:
-        # This is the SCB evaluator, NOT a GA search.
+        # This is the SCB evaluator.
+        #
+        # It is NOT a GA search.
         # --------------------------------------------------
 
         evaluation = evaluate(
-
             self.problem,
-
-            ga_cut
-
+            ga_cut,
         )
 
 
         # --------------------------------------------------
-        # Build state.
+        # evaluate() may return cut_edges in tuple form.
+        #
+        # Normalize them so SCBState continues to expose
+        # the expected edge representation.
+        # --------------------------------------------------
+
+        if "cut_edges" in evaluation:
+
+            converted_cut_edges = []
+
+
+            for edge in evaluation["cut_edges"]:
+
+                if isinstance(
+                    edge,
+                    int,
+                ):
+
+                    converted_cut_edges.append(
+                        self.problem.edges[edge]
+                    )
+
+                else:
+
+                    converted_cut_edges.append(
+                        tuple(edge)
+                    )
+
+
+            evaluation["cut_edges"] = (
+                converted_cut_edges
+            )
+
+
+        # --------------------------------------------------
+        # Build SCB state.
         # --------------------------------------------------
 
         return SCBState(
-
             problem=self.problem,
-
             evaluation=evaluation,
-
-            step=self.episode_step
-
+            step=self.episode_step,
         )
 
 
-    # ======================================================
-    # Best Solution Tracking
-    # ======================================================
+    # ==========================================================
+    # BEST SOLUTION TRACKING
+    # ==========================================================
 
     def _update_best_state(self):
         """
-        Update the best finite SCB found so far.
+        Update the best finite SCB discovered during this
+        episode.
 
         Returns
         -------
         bool
-            True if the current state is a new best.
+            True if a new best solution was discovered.
         """
 
         current = self.current_state
 
 
         # --------------------------------------------------
-        # Current state must be a meaningful solution.
+        # Ignore invalid/non-finite states.
         # --------------------------------------------------
 
-        if (
-            current.separated_count <= 0
-            or current.cut_size <= 0
-            or current.scb <= EPSILON
-            or current.scb == float("inf")
+        if not self._is_valid_scb(
+            current
         ):
 
             return False
 
 
         # --------------------------------------------------
-        # First finite solution.
+        # First valid SCB.
         # --------------------------------------------------
 
         if self.best_scb is None:
@@ -363,10 +548,13 @@ class SCBEnvironment:
 
 
         # --------------------------------------------------
-        # Improved solution.
+        # Better SCB.
         # --------------------------------------------------
 
-        if current.scb < self.best_scb:
+        if (
+            current.scb
+            < self.best_scb
+        ):
 
             self.best_scb = (
                 current.scb
@@ -386,28 +574,39 @@ class SCBEnvironment:
         return False
 
 
-    # ======================================================
-    # Info
-    # ======================================================
+    # ==========================================================
+    # INFORMATION
+    # ==========================================================
 
     def _get_info(self):
         """
-        Return diagnostics used by tests and logging.
+        Return lightweight environment diagnostics.
+
+        GA information is included for evaluation/logging only.
         """
 
-        if self.best_state is None:
+        best_scb = None
 
-            best_scb = None
 
-        else:
+        if self.best_scb is not None:
 
-            best_scb = self.best_scb
+            best_scb = (
+                self.best_scb
+            )
 
 
         return {
 
             # ------------------------------------------------
-            # Teacher / GA
+            # Curriculum
+            # ------------------------------------------------
+
+            "phase":
+                self.phase,
+
+
+            # ------------------------------------------------
+            # GA evaluation information
             # ------------------------------------------------
 
             "teacher_scb":
@@ -415,7 +614,7 @@ class SCBEnvironment:
 
 
             # ------------------------------------------------
-            # Current RL solution
+            # Current RL state
             # ------------------------------------------------
 
             "current_scb":
@@ -429,7 +628,7 @@ class SCBEnvironment:
 
 
             # ------------------------------------------------
-            # Best RL solution
+            # Best RL state
             # ------------------------------------------------
 
             "best_scb":
@@ -451,7 +650,7 @@ class SCBEnvironment:
 
 
             # ------------------------------------------------
-            # Reward
+            # Reward diagnostics
             # ------------------------------------------------
 
             "reward_components":
@@ -467,13 +666,12 @@ class SCBEnvironment:
 
             "done":
                 self.done,
-
         }
 
 
-    # ======================================================
-    # Reset
-    # ======================================================
+    # ==========================================================
+    # RESET
+    # ==========================================================
 
     def reset(self):
         """
@@ -504,23 +702,31 @@ class SCBEnvironment:
 
         self._last_reward_components = {
 
-            "separation": 0.0,
+            "separation":
+                0.0,
 
-            "scb": 0.0,
+            "scb":
+                0.0,
 
-            "best_bonus": 0.0,
+            "best_bonus":
+                0.0,
 
-            "stop": 0.0,
+            "stop":
+                0.0,
 
-            "time": 0.0,
+            "final":
+                0.0,
 
-            "total": 0.0,
+            "time":
+                0.0,
 
+            "total":
+                0.0,
         }
 
 
         # --------------------------------------------------
-        # Empty cut.
+        # Empty initial cut.
         # --------------------------------------------------
 
         empty_cut = set()
@@ -538,16 +744,21 @@ class SCBEnvironment:
         )
 
 
-    # ======================================================
-    # Action Validation
-    # ======================================================
+    # ==========================================================
+    # ACTION VALIDATION
+    # ==========================================================
 
     def _is_valid_action(
         self,
-        action
+        action,
     ):
         """
         Validate an action against the current cut.
+
+        Phase 1 intentionally rejects STOP.
+
+        STOP remains available in the action enum so that
+        Phase 2 can activate it later.
         """
 
         action.validate()
@@ -565,7 +776,8 @@ class SCBEnvironment:
         if action.is_add():
 
             return (
-                action.edge not in cut
+                action.edge
+                not in cut
             )
 
 
@@ -576,7 +788,8 @@ class SCBEnvironment:
         if action.is_remove():
 
             return (
-                action.edge in cut
+                action.edge
+                in cut
             )
 
 
@@ -611,19 +824,37 @@ class SCBEnvironment:
 
         if action.is_stop():
 
+            # ----------------------------------------------
+            # Phase 1:
+            #
+            # STOP is not part of the action set.
+            # ----------------------------------------------
+
+            if (
+                self.phase
+                == PHASE_CONSTRUCTION
+            ):
+
+                return False
+
+
+            # ----------------------------------------------
+            # Future phases.
+            # ----------------------------------------------
+
             return True
 
 
         return False
 
 
-    # ======================================================
-    # Action Application
-    # ======================================================
+    # ==========================================================
+    # ACTION APPLICATION
+    # ==========================================================
 
     def _apply_add(
         self,
-        action
+        action,
     ):
 
         cut = (
@@ -639,7 +870,7 @@ class SCBEnvironment:
 
     def _apply_remove(
         self,
-        action
+        action,
     ):
 
         cut = (
@@ -655,42 +886,53 @@ class SCBEnvironment:
 
     def _apply_swap(
         self,
-        action
+        action,
     ):
 
         cut = (
             self.current_state.cut.copy()
         )
 
+
         cut.remove(
             action.remove_edge
         )
 
+
         cut.add(
             action.add_edge
         )
+
 
         return cut
 
 
     def _apply_stop(
         self,
-        action
+        action,
     ):
+        """
+        STOP does not modify the cut.
+
+        Actual STOP semantics are handled by step().
+        """
 
         return (
             self.current_state.cut.copy()
         )
 
 
-    # ======================================================
+    # ==========================================================
     # STEP
-    # ======================================================
+    # ==========================================================
 
     def step(
         self,
-        action
+        action,
     ):
+        """
+        Execute one environment transition.
+        """
 
         if self.done:
 
@@ -713,6 +955,9 @@ class SCBEnvironment:
 
             # ------------------------------------------------
             # Invalid action reward.
+            #
+            # Phase 1 STOP therefore receives the normal
+            # invalid-action penalty.
             # ------------------------------------------------
 
             self._last_reward_components = (
@@ -732,10 +977,18 @@ class SCBEnvironment:
                     best_scb=
                         self.best_scb,
 
-                    is_stop=False,
+                    is_stop=
+                        False,
 
-                    new_best=False,
+                    new_best=
+                        False,
 
+                    phase=
+                        self.phase,
+
+                    episode_done=
+                        self.episode_step
+                        >= self.max_steps,
                 )
             )
 
@@ -748,9 +1001,7 @@ class SCBEnvironment:
 
 
             # ------------------------------------------------
-            # Max-step termination.
-            #
-            # NO GA reward.
+            # Fixed-horizon termination.
             # ------------------------------------------------
 
             if (
@@ -759,6 +1010,117 @@ class SCBEnvironment:
             ):
 
                 self.done = True
+
+
+                # Recalculate invalid-action transition
+                # with episode_done=True so Phase 1 gets its
+                # final best-SCB reward.
+                self._last_reward_components = (
+                    compute_reward_components(
+
+                        old_state=
+                            self.current_state,
+
+                        new_state=
+                            self.current_state,
+
+                        action=
+                            action,
+
+                        invalid=True,
+
+                        best_scb=
+                            self.best_scb,
+
+                        is_stop=
+                            False,
+
+                        new_best=
+                            False,
+
+                        phase=
+                            self.phase,
+
+                        episode_done=
+                            True,
+                    )
+                )
+
+
+                reward = (
+                    self._last_reward_components[
+                        "total"
+                    ]
+                )
+
+
+                # ------------------------------------------------
+                # IMPORTANT:
+                #
+                # Invalid-action reward intentionally does NOT
+                # receive a final best-SCB reward through the
+                # invalid branch because reward.py treats an
+                # invalid action as an immediate fixed penalty.
+                #
+                # We therefore add the Phase-1 final reward
+                # explicitly below.
+                # ------------------------------------------------
+
+                final_components = (
+                    compute_reward_components(
+
+                        old_state=
+                            self.current_state,
+
+                        new_state=
+                            self.current_state,
+
+                        action=
+                            action,
+
+                        invalid=False,
+
+                        best_scb=
+                            self.best_scb,
+
+                        is_stop=
+                            False,
+
+                        new_best=
+                            False,
+
+                        phase=
+                            self.phase,
+
+                        episode_done=
+                            True,
+                    )
+                )
+
+
+                final_reward = (
+                    final_components.get(
+                        "final",
+                        0.0
+                    )
+                )
+
+
+                self._last_reward_components[
+                    "final"
+                ] = final_reward
+
+
+                self._last_reward_components[
+                    "total"
+                ] += final_reward
+
+
+                reward = (
+                    self._last_reward_components[
+                        "total"
+                    ]
+                )
 
 
             state = (
@@ -771,20 +1133,21 @@ class SCBEnvironment:
 
 
             return (
-
                 state,
-
                 reward,
-
                 self.done,
-
-                self._get_info()
-
+                self._get_info(),
             )
 
 
         # ==================================================
         # STOP
+        # ==================================================
+        #
+        # Phase 1 should never reach this branch because
+        # STOP is rejected above.
+        #
+        # This branch exists for Phase 2+.
         # ==================================================
 
         if action.is_stop():
@@ -803,13 +1166,6 @@ class SCBEnvironment:
             )
 
 
-            # ------------------------------------------------
-            # STOP reward.
-            #
-            # IMPORTANT:
-            # No GA comparison here.
-            # ------------------------------------------------
-
             self._last_reward_components = (
                 compute_reward_components(
 
@@ -827,10 +1183,17 @@ class SCBEnvironment:
                     best_scb=
                         self.best_scb,
 
-                    is_stop=True,
+                    is_stop=
+                        True,
 
-                    new_best=False,
+                    new_best=
+                        False,
 
+                    phase=
+                        self.phase,
+
+                    episode_done=
+                        True,
                 )
             )
 
@@ -843,15 +1206,10 @@ class SCBEnvironment:
 
 
             return (
-
                 state,
-
                 reward,
-
                 True,
-
-                self._get_info()
-
+                self._get_info(),
             )
 
 
@@ -865,7 +1223,7 @@ class SCBEnvironment:
 
 
         # --------------------------------------------------
-        # Apply action.
+        # Apply ADD / REMOVE / SWAP.
         # --------------------------------------------------
 
         new_cut = (
@@ -893,54 +1251,62 @@ class SCBEnvironment:
         )
 
 
-        # --------------------------------------------------
-        # Save best SCB BEFORE updating it.
-        #
-        # This is the correct reference for determining
-        # whether this transition discovered a new best.
-        # --------------------------------------------------
+        # ==================================================
+        # DETERMINE NEW BEST
+        # ==================================================
 
         old_best_scb = (
             self.best_scb
         )
 
 
-        # --------------------------------------------------
-        # Determine whether this transition is a new best.
-        #
-        # We calculate this before updating bookkeeping,
-        # then pass the result explicitly to reward.py.
-        # --------------------------------------------------
-
-        current = (
-            self.current_state
-        )
-
-
         found_new_best = False
 
 
-        if (
-            current.separated_count > 0
-            and current.cut_size > 0
-            and current.scb > EPSILON
-            and current.scb != float("inf")
+        if self._is_valid_scb(
+            self.current_state
         ):
 
             if (
                 old_best_scb is None
-                or current.scb < old_best_scb
+                or self.current_state.scb
+                < old_best_scb
             ):
 
                 found_new_best = True
 
 
-        # --------------------------------------------------
-        # Calculate transition reward.
-        #
-        # IMPORTANT:
-        # best_scb is the BEST VALUE BEFORE this action.
-        # --------------------------------------------------
+        # ==================================================
+        # UPDATE PREVIOUS VALID SCB
+        # ==================================================
+
+        if self._is_valid_scb(
+            self.current_state
+        ):
+
+            self.previous_valid_scb = (
+                self.current_state.scb
+            )
+
+
+        # ==================================================
+        # MAX-STEP CHECK
+        # ==================================================
+
+        reaches_horizon = (
+            self.episode_step
+            >= self.max_steps
+        )
+
+
+        if reaches_horizon:
+
+            self.done = True
+
+
+        # ==================================================
+        # TRANSITION REWARD
+        # ==================================================
 
         self._last_reward_components = (
             compute_reward_components(
@@ -959,11 +1325,17 @@ class SCBEnvironment:
                 best_scb=
                     old_best_scb,
 
-                is_stop=False,
+                is_stop=
+                    False,
 
                 new_best=
                     found_new_best,
 
+                phase=
+                    self.phase,
+
+                episode_done=
+                    reaches_horizon,
             )
         )
 
@@ -975,48 +1347,11 @@ class SCBEnvironment:
         )
 
 
-        # --------------------------------------------------
-        # NOW update best-state bookkeeping.
-        # --------------------------------------------------
+        # ==================================================
+        # UPDATE BEST STATE
+        # ==================================================
 
         self._update_best_state()
-
-
-        # --------------------------------------------------
-        # Update previous valid SCB.
-        # --------------------------------------------------
-
-        if (
-            self.current_state.separated_count > 0
-            and self.current_state.cut_size > 0
-            and self.current_state.scb > EPSILON
-            and self.current_state.scb != float("inf")
-        ):
-
-            self.previous_valid_scb = (
-                self.current_state.scb
-            )
-
-
-        # ==================================================
-        # MAX STEP
-        # ==================================================
-
-        if (
-            self.episode_step
-            >= self.max_steps
-        ):
-
-            self.done = True
-
-
-        # --------------------------------------------------
-        # IMPORTANT:
-        #
-        # No GA terminal reward is added.
-        #
-        # GA remains evaluation-only.
-        # --------------------------------------------------
 
 
         # ==================================================
@@ -1033,88 +1368,71 @@ class SCBEnvironment:
 
 
         return (
-
             state,
-
             reward,
-
             self.done,
-
-            self._get_info()
-
+            self._get_info(),
         )
 
 
-    # ======================================================
-    # GA Evaluation Helper
-    # ======================================================
+    # ==========================================================
+    # TERMINAL REWARD
+    # ==========================================================
 
-    def evaluate_against_ga(self):
+    def _compute_terminal_reward(self):
         """
-        Evaluate the best RL solution against the GA teacher.
+        Return the Phase-1 terminal reward based only on the
+        best SCB discovered by the RL agent.
 
-        IMPORTANT:
+        This method is retained as a compatibility helper for
+        existing code/tests.
 
-        This function is NOT used by PPO reward calculation.
-
-        It exists solely for testing, logging and final
-        comparison.
-
-        Returns
-        -------
-        dict
+        GA information is NOT used.
         """
 
         if (
-            self.best_state is None
-            or self.best_scb is None
+            self.best_scb is None
         ):
 
-            return {
-
-                "rl_best_scb":
-                    None,
-
-                "ga_scb":
-                    self.teacher_scb,
-
-                "ratio":
-                    None,
-
-            }
+            return -1.0
 
 
-        rl_scb = (
-            self.best_scb
-        )
+        try:
 
-
-        ratio = (
-            self.teacher_scb
-            / max(
-                rl_scb,
-                EPSILON
+            best_scb = float(
+                self.best_scb
             )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            return -1.0
+
+
+        if (
+            best_scb <= EPSILON
+            or best_scb == float("inf")
+        ):
+
+            return -1.0
+
+
+        # Same bounded SCB-quality concept used by reward.py.
+
+        quality = (
+            1.0
+            / (1.0 + best_scb)
         )
 
 
-        return {
-
-            "rl_best_scb":
-                rl_scb,
-
-            "ga_scb":
-                self.teacher_scb,
-
-            "ratio":
-                ratio,
-
-        }
+        return quality
 
 
-    # ======================================================
-    # Render
-    # ======================================================
+    # ==========================================================
+    # RENDER
+    # ==========================================================
 
     def render(self):
 
