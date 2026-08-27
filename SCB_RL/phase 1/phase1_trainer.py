@@ -699,9 +699,8 @@ class PPOTrainer:
                 # ----------------------------------------------
 
                 self.env = SCBEnvironment(
-                    graph,
-                    max_steps=100
-                )
+                    graph
+                ) # add max steps=100 to env for phase 1 training
 
                 # ----------------------------------------------
                 # Collect Episode
