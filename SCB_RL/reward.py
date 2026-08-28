@@ -52,24 +52,6 @@ DEFAULT_PHASE = PHASE_TERMINATION
 # This is deliberately not an artificial hard step limit.
 TIME_PENALTY_WEIGHT = 0.02
 
-# Step-dependent time penalty.
-#
-# The penalty starts small and grows smoothly with episode length.
-# It is capped so that a legitimate 50-60+ step search is still possible.
-#
-# Approximate per-step penalty:
-#   step   1 -> ~0.0004
-#   step  25 -> ~0.0100
-#   step  50 -> ~0.0200
-#   step  75 -> ~0.0300
-#   step 100 -> ~0.0400
-#   step 150+ -> ~0.0500
-#
-# This fixes the previous implementation where the step number
-# was calculated but never actually used.
-TIME_PENALTY_MAX = 0.05
-TIME_PENALTY_RAMP_STEPS = 50
-
 
 # Strong signal that the current cut has achieved nothing.
 ZERO_SEPARATION_PENALTY = -1.50
@@ -85,11 +67,6 @@ SEPARATION_REWARD = 0.10
 #
 # Lower SCB -> larger quality.
 SEARCH_QUALITY_WEIGHT = 0.30
-
-# Once a finite SCB exists, continuing to spend steps should become
-# less attractive. This prevents the agent from farming positive
-# search-quality reward indefinitely instead of stopping.
-CONTINUE_PENALTY_WEIGHT = 0.05
 
 
 # STOP rewards.
@@ -161,24 +138,8 @@ def scb_quality(scb):
 
 
 def _time_penalty(state):
-    """
-    Increasing per-step cost.
-
-    The penalty grows linearly with the current step and is capped
-    at TIME_PENALTY_MAX.
-
-    This makes long episodes progressively more expensive without
-    creating an artificial hard step limit.
-    """
     step = max(int(getattr(state, "step", 0)), 1)
-
-    penalty = (
-        TIME_PENALTY_WEIGHT
-        * step
-        / TIME_PENALTY_RAMP_STEPS
-    )
-
-    return min(penalty, TIME_PENALTY_MAX)
+    return TIME_PENALTY_WEIGHT
 
 
 # ==========================================================
@@ -267,14 +228,6 @@ def _compute_phase2_reward(
 
         scb_component = (
             SEARCH_QUALITY_WEIGHT
-            * scb_quality(new_scb)
-        )
-
-        # A finite SCB means the agent has reached useful territory.
-        # Continuing is still allowed, but it now carries a small
-        # additional cost so STOP becomes increasingly attractive.
-        scb_component -= (
-            CONTINUE_PENALTY_WEIGHT
             * scb_quality(new_scb)
         )
 
