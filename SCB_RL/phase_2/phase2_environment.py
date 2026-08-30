@@ -20,13 +20,13 @@ The episode ends when the agent selects STOP.
 
 from GA_SCB.graph import SCBProblem, evaluate
 
-from .reward import (
+from .phase2_reward import (
     compute_reward_components,
     PHASE_TERMINATION,
 )
 
-from .actions import ActionType
-from .state import SCBState
+from SCB_RL.actions import ActionType
+from SCB_RL.state import SCBState
 
 
 EPSILON = 1e-8

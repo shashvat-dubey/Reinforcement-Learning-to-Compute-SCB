@@ -34,14 +34,14 @@ import torch
 import torch.nn.functional as F
 from torch.optim import Adam
 
-from SCB_RL.environment import SCBEnvironment
+from phase_2.phase2_environment import SCBEnvironment
 from SCB_RL.memory import PPOMemory
 from SCB_RL.gae import compute_gae
 
 from Data.loader import GraphDataset
 
 from SCB_RL.gnn import SCBGraphEncoder
-from SCB_RL.policy import HierarchicalSCBPolicy
+from phase_2.phase2_policy import HierarchicalSCBPolicy
 from SCB_RL.critic import SCBCritic
 
 

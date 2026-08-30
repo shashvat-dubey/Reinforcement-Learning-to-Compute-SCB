@@ -23,7 +23,7 @@ This creates the intended "blitz exam" behavior:
 Phase 3/4 hooks are left below for future expansion.
 """
 
-from .actions import ActionType
+from SCB_RL.actions import ActionType
 
 
 # ==========================================================

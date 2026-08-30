@@ -6,6 +6,7 @@ checkpoints/
 
 tests for failure/
 SCB_RL/Tests/
+SCB_RL/checkpoints/
 extra diagnostic stuff/
 diagnostics/
 
